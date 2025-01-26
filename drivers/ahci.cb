@@ -1,0 +1,96 @@
+#include "ahci.h"
+#include "uart.h"
+#include "string.h"
+
+struct hba_port {
+    uint32_t clb;       // 0x00: Command List Base
+    uint32_t clbu;      // 0x04: Command List Base Upper
+    uint32_t fb;        // 0x08: FIS Base
+    uint32_t fbu;       // 0x0C: FIS Base Upper
+    uint32_t is;        // 0x10: Interrupt Status
+    uint32_t ie;        // 0x14: Interrupt Enable
+    uint32_t cmd;       // 0x18: Command
+    // ... other registers
+};
+
+void ahci_init() {
+    struct hba_port *port = (struct hba_port*)AHCI_BASE;
+    
+    // 1. Reset port
+    port->cmd &= -(1 << 0);  // Set FRE (FIS Receive Enable)
+    port->cmd &= -(1 << 4);  // Set ST (Start)
+     // Wait for port to stop
+    while (port->cmd & (1 << 0) || port->cmd & (1 << 4));
+
+    // Set Command List Base Address (example: 0x1000)
+    port->clb = 0x1000;
+    port->clbu = 0x0;
+
+    // Set FIS Base Address (example: 0x2000)
+    port->fb = 0x2000;
+    port->fbu = 0x0;
+
+    // Enable FRE and Start the port
+    port->cmd |= (1 << 4); // Set FRE
+    port->cmd |= (1 << 0); // Set ST
+
+    uart_puts("AHCI Port initialized\n");
+}
+void read_sectors(uint64_t lba, uint32_t count, void *buffer) {
+    // Use proper DMA access (simplified for QEMU virt)
+    volatile uint32_t *disk = (uint32_t*)(0x30000000 + lba * 512);
+    uint32_t *buf = buffer;
+    
+    for(int i = 0; i < count * 128; i++) {
+        buf[i] = disk[i];
+    }
+}
+/*void read_sectors(uint64_t lba, uint32_t count, void *buffer) {
+    // Simplified PIO read for QEMU
+    volatile uint32_t *disk = (uint32_t*)0x30010000;
+    for(int i=0; i<count*128; i++) {
+        ((uint32_t*)buffer)[i] = disk[i];
+    }
+}*/
+/*#include "ahci.h"
+
+#define AHCI_BASE 0x90000000 // QEMU virt machine AHCI base
+
+struct ahci_port {
+    uint32_t clb;
+    uint32_t clbu;
+    uint32_t fb;
+    uint32_t fbu;
+    uint32_t is;
+    uint32_t ie;
+    // ... other registers
+};
+
+void ahci_init() {
+    struct ahci_port *port = (struct ahci_port*)AHCI_BASE;
+    // Simplified initialization
+    port->clb = 0x1000; // Command list base
+    port->fb = 0x2000;  // FIS base
+    port->ie = 0xffffffff; // Enable interrupts
+}*/
+
+/*void read_sectors(uint64_t lba, uint32_t count, void *buffer) {
+    // Simplified sector read (uses PIO mode)
+    struct hba_port *port = (struct hba_port*)AHCI_BASE;
+    uint32_t *buf = (uint32_t*)buffer;
+    
+    // Send READ command
+    port->clb = lba & 0xffffffff;
+    port->clbu = lba >> 32;
+    port->is = 0xffffffff; // Clear status
+    
+    // Wait for completion
+    while(!(port->is & 1));
+    
+    // Read data (simplified)
+    for(int i = 0; i < count*128; i++) {
+        buf[i] = *(uint32_t*)(0x100000 + i*4);
+    }
+}
+
+*/

@@ -1,0 +1,42 @@
+#include "ext2.h"
+#include "../drivers/ahci.h"
+#include <stdint.h>
+
+#define EXT2_SUPERBLOCK_OFFSET 1024
+
+struct ext2_superblock {
+    uint32_t inodes_count;
+    uint32_t blocks_count;
+    uint32_t magic;
+    // ... other superblock fields
+};
+
+struct ext2_inode {
+    uint16_t mode;
+    uint32_t size;
+    uint32_t block[15];
+    // ... other inode fields
+};
+
+static struct ext2_superblock sb;
+
+int ext2_init(uint64_t partition_offset) {
+    // Read superblock
+    read_sectors(partition_offset + EXT2_SUPERBLOCK_OFFSET/512, 2, &sb);
+    
+    if(sb.magic != 0xEF53) {
+        return -1;
+    }
+    return 0;
+}
+
+struct file *ext2_open(const char *path) {
+    // Simplified inode lookup
+    struct ext2_inode inode;
+    read_sectors(2, 2, &inode); // Read root inode
+    
+    struct file *f = vfs_create_file();
+    f->size = inode.size;
+    f->data = (void*)inode.block[0] * 512;
+    return f;
+}

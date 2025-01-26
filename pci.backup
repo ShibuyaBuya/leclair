@@ -1,0 +1,59 @@
+#include "../lib/stdint.h"
+#include "uart.h"
+
+uint64_t pci_ecam_offset(uint8_t bus, uint8_t device, uint8_t function, uint16_t offset) {
+    return (bus << 20) | (device << 15) | (function << 12) | (offset & 0xFFF);
+}
+// Read 32-bit value from PCI config space
+uint32_t pci_read32(uint8_t bus, uint8_t device, uint8_t function, uint16_t offset) {
+    volatile uint32_t *addr = (uint32_t*)(PCI_ECAM_BASE + pci_ecam_offset(bus, device, function, offset));
+    return *addr;
+}
+
+// Write 32-bit value to PCI config space
+void pci_write32(uint8_t bus, uint8_t device, uint8_t function, uint16_t offset, uint32_t value) {
+    volatile uint32_t *addr = (uint32_t*)(PCI_ECAM_BASE + pci_ecam_offset(bus, device, function, offset));
+    *addr = value;
+}
+void pci_enum() {
+    for (uint16_t bus = 0; bus < 256; bus++) {
+        for (uint8_t device = 0; device < 32; device++) {
+            for (uint8_t function = 0; function < 8; function++) {
+                // Check Vendor ID (offset 0x00)
+                uint32_t vendor_device = pci_read32(bus, device, function, 0x00);
+                uint16_t vendor_id = vendor_device & 0xFFFF;
+                uint16_t device_id = (vendor_device >> 16) & 0xFFFF;
+
+                if (vendor_id == 0xFFFF) continue; // No device
+
+                // Device found: print details and read BARs
+                uart_puts("PCI Device: ");
+                uart_puthex16(vendor_id);
+                uart_puts(":");
+                uart_puthex16(device_id);
+                uart_puts("\n");
+
+                // Read BARs (offsets 0x10-0x24)
+                for (uint8_t bar_offset = 0x10; bar_offset <= 0x24; bar_offset += 4) {
+                    uint32_t bar = pci_read32(bus, device, function, bar_offset);
+                    if (bar == 0 || bar == 0xFFFFFFFF) continue;
+
+                    // Determine BAR type (bit 0)
+                    if ((bar & 0x1) == 0x1) {
+                        // I/O Space BAR (rare in modern systems)
+                        uart_puts("  I/O BAR: 0x");
+                        uart_puthex32(bar & ~0x3);
+                    } else {
+                        // Memory Space BAR
+                        uint32_t bar_size = pci_bar_size(bus, device, function, bar_offset);
+                        uart_puts("  MEM BAR: 0x");
+                        uart_puthex32(bar & ~0xF);
+                        uart_puts(" (size=0x");
+                        uart_puthex32(bar_size);
+                        uart_puts(")\n");
+                    }
+                }
+            }
+        }
+    }
+}

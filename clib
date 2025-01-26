@@ -1,0 +1,13 @@
+void lcl_main() {
+    uart_puts("LCL (Lite Custom Linux) v1.0\n");
+    
+    while(1) {
+        uart_puts("$ ");
+        char cmd[128];
+        uart_gets(cmd, sizeof(cmd));
+        
+        // Parse commands
+        if(strcmp(cmd, "exit") == 0) break;
+        // Add other commands...
+    }
+}

@@ -1,0 +1,36 @@
+CC = aarch64-linux-gnu-gcc
+LD = aarch64-linux-gnu-ld
+OBJCOPY = aarch64-linux-gnu-objcopy
+
+CFLAGS = -ffreestanding -nostdlib -mgeneral-regs-only -I./include
+
+all: kernel8.img lcl
+
+kernel8.elf: boot.o kernel.o ahci.o ext2.o
+	$(LD) -T linker.ld -o $@ $^
+
+kernel8.img: kernel8.elf
+	$(OBJCOPY) -O binary $< $@
+
+lcl: cli/lcl.c
+	$(CC) $(CFLAGS) -Ttext=0x8000 -o $@ $^
+	$(OBJCOPY) -O binary $@ $@.bin
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+boot.o: boot.S
+	$(CC) $(CFLAGS) -c $< -o $@
+
+fsimage:
+	./scripts/createfs.sh
+
+run: kernel8.img fsimage
+	qemu-system-aarch64 -M virt -cpu cortex-a53 \
+	-drive file=disk.img,format=raw,id=disk \
+	-device ahci,id=ahci \
+	-device ide-hd,drive=disk,bus=ahci.0 \
+	-nographic -kernel kernel8.img
+
+clean:
+	rm -f *.o *.elf *.img cli/lcl*

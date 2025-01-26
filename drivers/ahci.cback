@@ -1,0 +1,151 @@
+#include "ahci.h"
+#include "uart.h"
+#include "../lib/string.h"
+#include <stdalign.h>
+
+struct hba_mem *hba = (struct hba_mem*)AHCI_BASE;
+
+// Allocate 4K-aligned memory
+static void* ahci_alloc_mem(size_t size) {
+    static alignas(4096) uint8_t mem_pool[2 * 1024 * 1024]; // 2MB pool
+    static size_t pool_ptr = 0;
+    void *ret = &mem_pool[pool_ptr];
+    pool_ptr += size;
+    return ret;
+}
+
+static void port_stop(struct hba_port *port) {
+    // Stop command engine
+    port->cmd &= ~(1 << 0); // ST = 0
+    port->cmd &= ~(1 << 4); // FRE = 0
+    
+    // Wait until engine stops
+    while(port->cmd & (1 << 15) || port->cmd & (1 << 14));
+}
+
+static int port_init(uint8_t port_num) {
+    struct hba_port *port = &hba->ports[port_num];
+    
+    // Check port type
+     // 1. Verify port is active
+    if(!(port->cmd & (1 << 0))) {
+        uart_puts(" Port not active");
+        return -1;
+    }
+     // 2. Check SATA status
+    uint32_t ssts = port->ssts;
+    uart_puts(" SSTS: 0x");
+    uart_puthex32(ssts);
+    if((port->ssts & 0x0F) != 3) { // Not SATA device
+        uart_puts(" Not SATA");
+        return -1;
+    }
+    
+    port_stop(port);
+    
+    // Allocate command list (1K) + FIS (256B)
+//    port->clb = (uint32_t)(uintptr_t)ahci_alloc_mem(1024);
+  //  port->clbu = 0;
+    //port->fb = (uint32_t)(uintptr_t)ahci_alloc_mem(256);
+    //port->fbu = 0;
+	void *clb = ahci_alloc_mem(1024);
+    void *fb = ahci_alloc_mem(256);
+    
+    if(!clb || !fb) {
+        uart_puts(" Memory error");
+        return -1;
+    }
+    port->clb = (uint32_t)(uintptr_t)clb;
+    port->clbu = (uint32_t)((uintptr_t)clb >> 32);
+    port->fb = (uint32_t)(uintptr_t)fb;
+    port->fbu = (uint32_t)((uintptr_t)fb >> 32);
+    // Enable FIS reception
+    port->cmd |= (1 << 4); // FRE = 1
+    
+    // Start command engine
+    port->cmd |= (1 << 0); // ST = 1
+    
+    return 0;
+}
+
+void ahci_init() {
+    // Enable AHCI 
+    hba = (struct hba_mem*)AHCI_BASE;
+    volatile uint32_t *test_reg = (uint32_t*)AHCI_BASE;
+    uart_puts("Raw CAP read: 0x");
+    uart_puthex32(*test_reg);
+    uart_puts("\n");
+/*    uart_puts("AHCI CAP: 0x");
+    uart_puthex32(hba->cap);
+    uart_puts("\nAHCI PI: 0x");
+    uart_puthex32(hba->pi);
+    uart_puts("\nAHCI VS: 0x");
+    uart_puthex32(hba->vs);
+    uart_puts("\n");*/
+
+    // Rest of init code
+    hba->ghc |= (1 << 31);
+    while(!(hba->ghc & (1 << 31)));
+    uart_puts("GHC after enable: 0x");
+uart_puthex32(hba->ghc);
+uart_puts("\nCAP after enable: 0x");
+uart_puthex32(hba->cap);
+uart_puts("\n");
+    // Find implemented ports
+    uint32_t ports = hba->pi;
+    for(int i=0; i<32; i++) {
+        if(ports & (1 << i) && (i < (hba->cap && 0x1F) + 1)) {
+            uart_puts("Initializing port ");
+            uart_putdec32(i);
+            if(port_init(i) == 0) {
+                uart_puts(" OK\n");
+            } else {
+                uart_puts(" Failed\n");
+            }
+        }
+    }
+}
+
+int ahci_read(uint8_t port_num, uint64_t lba, uint32_t count, void *buffer) {
+    struct hba_port *port = &hba->ports[port_num];
+    struct hba_cmd_header *cmd_header = (struct hba_cmd_header*)(uintptr_t)port->clb;
+    struct hba_cmd_table *cmd_table = (struct hba_cmd_table*)(uintptr_t)cmd_header->ctba;
+    
+    // Setup command header
+    cmd_header->opts = (5 << 16) | (1 << 6) | (1 << 5); // FIS 34h, read
+    cmd_header->prdtl = 1;
+    
+    // Setup PRDT
+    cmd_table->prdt[0].dba = (uint32_t)(uintptr_t)buffer;
+    cmd_table->prdt[0].dbau = 0;
+    cmd_table->prdt[0].dbc = (count * 512) - 1; // 0-based
+    
+    // Setup FIS
+    memset(cmd_table->cfis, 0, 64);
+    uint8_t *fis = cmd_table->cfis;
+    fis[0] = 0x27; // Host to device FIS
+    fis[1] = 0x80; // Command
+    fis[2] = 0x25; // READ DMA EXT
+    fis[4] = (lba >> 0) & 0xFF;
+    fis[5] = (lba >> 8) & 0xFF;
+    fis[6] = (lba >> 16) & 0xFF;
+    fis[7] = 0x40 | ((lba >> 24) & 0x0F);
+    fis[8] = (lba >> 32) & 0xFF;
+    fis[9] = (lba >> 40) & 0xFF;
+    fis[10] = count & 0xFF;
+    fis[12] = (count >> 8) & 0xFF;
+    
+    // Issue command
+    port->ci = 1;
+    
+    // Wait for completion
+    while(port->ci & 1);
+    
+    // Check errors
+    if(port->is & 0x40000000) { // Task file error
+        uart_puts("AHCI read error!\n");
+        return -1;
+    }
+    
+    return 0;
+}
